@@ -326,7 +326,9 @@ void lprintf( char *fmt,... )
 	vsprintf(buf, fmt, args);
 	va_end(args);
 
-	OSI_PutC( '+' );
+	OSI_PutC( '*' );
+	OSI_PutC( '*' );
+	OSI_PutC( '*' );
 	OSI_PutC( ' ' );
 	for( p=buf; *p; p++ )
 		OSI_PutC( *p );

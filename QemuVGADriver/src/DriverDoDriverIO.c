@@ -25,7 +25,7 @@ DriverDescription TheDriverDescription = {
 	| (0 * kDriverIsLoadedUponDiscovery)	/* Loader runtime options */
 	| (1 * kDriverIsOpenedUponLoad)		/* Opened when loaded */
 	| (1 * kDriverIsUnderExpertControl)	/* I/O expert handles loads/opens */
-	| (01 * kDriverIsConcurrent)		/* concurrent */
+	| (0 * kDriverIsConcurrent)		/* concurrent */
 	| (0 * kDriverQueuesIOPB),		/* Internally queued */
 	QEMU_PCI_VIDEO_PNAME,			/* Str31 driverName (OpenDriver param) */
 	0, 0, 0, 0, 0, 0, 0, 0,			/* UInt32 driverDescReserved[8] */
@@ -41,8 +41,6 @@ DriverDescription TheDriverDescription = {
 	kNdrvTypeIsVideo,				/* OSType serviceType */
 	1, 0, 0, 0
 };
-
-#pragma internal on
 
 /*
  * All driver-global information is in a structure defined in NCRDriverPrivate.
@@ -77,8 +75,6 @@ DriverGlobal	gDriverGlobal;
  * If it returns busy status, the driver promises to call IOCommandIsComplete when
  * the transaction has completed.
  */
-#pragma internal off
-
 OSStatus
 DoDriverIO( AddressSpaceID addressSpaceID, IOCommandID ioCommandID, IOCommandContents ioCommandContents,
 	    IOCommandCode ioCommandCode, IOCommandKind ioCommandKind )
@@ -90,8 +86,8 @@ DoDriverIO( AddressSpaceID addressSpaceID, IOCommandID ioCommandID, IOCommandCon
 	 * or immediate. Read, Write, Control, and Status may be immediate,
 	 * synchronous, or asynchronous.
 	 */
-	
-	Trace(DoDriverIO);
+
+	lprintf("DoDriverIO cmdCode=%d\n", ioCommandCode);
 
 	switch( ioCommandCode ) {
 	case kInitializeCommand:			/* Always immediate */
@@ -119,7 +115,6 @@ DoDriverIO( AddressSpaceID addressSpaceID, IOCommandID ioCommandID, IOCommandCon
 					   (CntrlParam*)ioCommandContents.pb );
 		break;
 	case kStatusCommand:
-		/* lprintf("kStatusCommand\n");	*/
 		status = DriverStatusCmd( ioCommandID, ioCommandKind, 
 					  (CntrlParam *)ioCommandContents.pb );
 		break;
@@ -138,6 +133,8 @@ DoDriverIO( AddressSpaceID addressSpaceID, IOCommandID ioCommandID, IOCommandCon
 		status = paramErr;
 		break;
 	}
+	lprintf("Completing with status=%d (kind: %x)\n", status, ioCommandKind);
+
 	/*
 	 * Force a valid result for immediate commands -- they must return a valid
 	 * status to the Driver Manager: returning kIOBusyStatus would be a bug..
@@ -166,8 +163,6 @@ DoDriverIO( AddressSpaceID addressSpaceID, IOCommandID ioCommandID, IOCommandCon
 	return status;
 }
 
-#pragma internal on
-
 /*
  * DriverInitializeCmd
  *
@@ -180,6 +175,11 @@ DriverInitializeCmd( AddressSpaceID addressSpaceID, DriverInitInfoPtr driverInit
 		
 	Trace(DriverInitializeCmd);
 
+	lprintf("** First call:\n");
+	lprintf("   DoDriverIO       @ %p\n", DoDriverIO);
+	lprintf("   DriverStatusCmd  @ %p\n", DriverStatusCmd);
+	lprintf("   DriverControlCmd @ %p\n", DriverControlCmd);
+	
 	GLOBAL.refNum = driverInitInfoPtr->refNum;
 	GLOBAL.openCount = 0;
 	GLOBAL.inInterrupt = false;
@@ -217,6 +217,7 @@ DriverInitializeCmd( AddressSpaceID addressSpaceID, DriverInitInfoPtr driverInit
 			GLOBAL.boardRegAddress, GLOBAL.boardRegMappedSize);
 
 
+	lprintf("Enabling memory space..\n");
 	status = EnablePCIMemorySpace(&GLOBAL.deviceEntry);
 	if (status != noErr) {
 		lprintf("EnablePCIMemorySpace returned %d\n", status);
@@ -224,7 +225,9 @@ DriverInitializeCmd( AddressSpaceID addressSpaceID, DriverInitInfoPtr driverInit
 	}
 
 	status = QemuVga_Init();
-
+	if (status != noErr)
+		goto bail;
+	
 bail:
 	DBG(lprintf("Driver init result: %d\n", status));
 	
@@ -330,12 +333,11 @@ DriverControlCmd( AddressSpaceID addressSpaceID, IOCommandID ioCommandID,
 	
 	switch( pb->csCode ) {
 	case cscReset:			// Old obsolete call..return a 'controlErr'
-		status = controlErr;
+		return controlErr;
 		break;
 			
 	case cscKillIO:			// Old obsolete call..do nothing
-		status = controlErr;
-		break;
+		return noErr;
 
 	case cscSetMode:
 		status = GraphicsCoreSetMode((VDPageInfo *) genericPtr);
@@ -368,8 +370,7 @@ DriverControlCmd( AddressSpaceID addressSpaceID, IOCommandID ioCommandID,
 		break;
 			
 	case cscSetDefaultMode:
-		status = controlErr;
-		break;
+		return controlErr;
 		
 	case cscSwitchMode:
 		status = GraphicsCoreSwitchMode((VDSwitchInfoRec *) genericPtr);
@@ -394,11 +395,10 @@ DriverControlCmd( AddressSpaceID addressSpaceID, IOCommandID ioCommandID,
 		status = GraphicsCoreSetPowerState((VDPowerStateRec *) genericPtr);
 		break;	
 	default:
-		status = controlErr;
 		break;
 	}
-	if( status )
-		status = controlErr;
+	if (status)
+		status = paramErr;
 
 	return status;
 }
@@ -425,7 +425,7 @@ DriverStatusCmd( IOCommandID ioCommandID, IOCommandKind ioCommandKind, CntrlPara
 	genericPtr = (void *) *((UInt32 *) &(pb->csParam[0]));
 
 	Trace(DriverStatusCmd);
-	
+	lprintf("csCode=%d\n", pb->csCode);
 	switch( pb->csCode ) {
 	case cscGetMode:
 		status = GraphicsCoreGetMode((VDPageInfo *) genericPtr);
@@ -510,13 +510,15 @@ DriverStatusCmd( IOCommandID ioCommandID, IOCommandKind ioCommandKind, CntrlPara
 	case cscGetPowerState:
 		status = GraphicsCoreGetPowerState((VDPowerStateRec *) genericPtr);
 		break;
-		
-	default:
-		status = statusErr;
+	case cscGetClutBehavior:
+		*(VDClutBehaviorPtr)genericPtr = kSetClutAtSetEntries;
+		status = noErr;
 		break;
+	default:
+		return statusErr;
 	}
-	if( status )
-		status = statusErr;
+	if (status)
+		status = paramErr;
 
 	return status;
 }

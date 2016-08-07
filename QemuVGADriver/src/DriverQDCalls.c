@@ -3,9 +3,59 @@
 #include "DriverQDCalls.h"
 #include "QemuVga.h"
 
-static OSStatus		GraphicsCoreDoSetEntries(VDSetEntryRecord *entryRecord, Boolean directDevice, UInt32 start, UInt32 stop, Boolean useValue);
+#define MAX_DEPTH_MODE	kDepthMode3
+
+static UInt8 DepthToDepthMode(UInt8 depth)
+{
+	switch (depth) {
+	case 8:
+		return kDepthMode1;
+	case 15:
+	case 16:
+		return kDepthMode2;
+	case 24:
+	case 32:
+		return kDepthMode3;
+	default:
+		return kDepthMode1;
+	}
+}
+
+static UInt8 DepthModeToDepth(UInt8 mode)
+{
+	switch (mode) {
+	case kDepthMode1:
+		return 32;
+	case kDepthMode2:
+		return 15;
+	case kDepthMode3:
+		return 32;
+	default:
+		return 8;
+	}
+}
 
 /************************ Color Table Stuff ****************************/
+
+static OSStatus
+GraphicsCoreDoSetEntries(VDSetEntryRecord *entryRecord, Boolean directDevice, UInt32 start, UInt32 stop, Boolean useValue)
+{
+	UInt32 i;
+	
+	CHECK_OPEN( controlErr );
+	if (GLOBAL.depth != 8)
+		return controlErr;
+	if (NULL == entryRecord->csTable)
+		return controlErr;
+	
+	/* Note that stop value is included in the range */
+	for(i=start;i<=stop;i++) {
+		UInt32	colorIndex = useValue ? entryRecord->csTable[i].value : i;
+		QemuVga_SetColorEntry(colorIndex, &entryRecord->csTable[i].rgb);
+	}
+	
+	return noErr;
+}
 
 OSStatus
 GraphicsCoreSetEntries(VDSetEntryRecord *entryRecord)
@@ -32,29 +82,6 @@ GraphicsCoreDirectSetEntries(VDSetEntryRecord *entryRecord)
 }
 
 OSStatus
-GraphicsCoreDoSetEntries(VDSetEntryRecord *entryRecord, Boolean directDevice, UInt32 start, UInt32 stop, Boolean useValue)
-{
-	UInt32 i;
-	
-	CHECK_OPEN( controlErr );
-	if (GLOBAL.depth != 8)
-		return controlErr;
-	if (NULL == entryRecord->csTable)
-		return controlErr;
-//	if (directDevice != (VMODE.depth != 8))
-//		return controlErr;
-	
-	/* Note that stop value is included in the range */
-	for(i=start;i<=stop;i++) {
-		UInt32	tabIndex = i-start;
-		UInt32	colorIndex = useValue ? entryRecord->csTable[tabIndex].value : tabIndex;
-		QemuVga_SetColorEntry(colorIndex, &entryRecord->csTable[tabIndex].rgb);
-	}
-	
-	return noErr;
-}
-
-OSStatus
 GraphicsCoreGetEntries(VDSetEntryRecord *entryRecord)
 {
 	Boolean useValue	= (entryRecord->csStart < 0);
@@ -64,10 +91,11 @@ GraphicsCoreGetEntries(VDSetEntryRecord *entryRecord)
 	
 	Trace(GraphicsCoreGetEntries);
 
+	if (GLOBAL.depth != 8)
+		return controlErr;
 	for(i=start;i<=stop;i++) {
-		UInt32	tabIndex = i-start;
-		UInt32	colorIndex = useValue ? entryRecord->csTable[tabIndex].value : tabIndex;
-		QemuVga_GetColorEntry(colorIndex, &entryRecord->csTable[tabIndex].rgb);
+		UInt32	colorIndex = useValue ? entryRecord->csTable[i].value : i;
+		QemuVga_GetColorEntry(colorIndex, &entryRecord->csTable[i].rgb);
 	}
 
 	return noErr;
@@ -117,13 +145,17 @@ GraphicsCoreGetGamma(VDGammaRecord *gammaRecord)
 OSStatus
 GraphicsCoreGrayPage(VDPageInfo *pageInfo)
 {
+	UInt32 pageCount;
+
 	CHECK_OPEN( controlErr );
 		
 	Trace(GraphicsCoreGrayPage);
 
-	if (pageInfo->csPage != 0)
+	QemuVga_GetModePages(GLOBAL.curMode, GLOBAL.depth, NULL, &pageCount);
+	if (pageInfo->csPage >= pageCount)
 		return paramErr;
-		
+	
+	/* XXX Make it gray ! */
 	return noErr;
 }
 			
@@ -142,12 +174,16 @@ GraphicsCoreSetGray(VDGrayRecord *grayRecord)
 OSStatus
 GraphicsCoreGetPages(VDPageInfo *pageInfo)
 {
-/*	DepthMode mode; */
+	UInt32 pageCount, depth;
+
 	CHECK_OPEN( statusErr );
 
 	Trace(GraphicsCoreGetPages);
 
-	pageInfo->csPage = 1;
+	depth = DepthModeToDepth(pageInfo->csMode);
+	QemuVga_GetModePages(GLOBAL.curMode, depth, NULL, &pageCount);
+	pageInfo->csPage = pageCount;
+
 	return noErr;
 }
 
@@ -233,79 +269,22 @@ GraphicsCoreGetInterrupt(VDFlagRecord *flagRecord)
 	return noErr;
 }
 
-/* assume initial state is always "power-on" */
-// XXX FIXME
-static unsigned long MOLVideoPowerState = kAVPowerOn;
-
 OSStatus
 GraphicsCoreSetSync(VDSyncInfoRec *syncInfo)
 {
-	unsigned char syncmask;
-	unsigned long newpowermode;
-
 	Trace(GraphicsCoreSetSync);
 
 	CHECK_OPEN( controlErr );
 
-	syncmask = (!syncInfo->csFlags)? kDPMSSyncMask: syncInfo->csFlags;
-	if (!(syncmask & kDPMSSyncMask)) /* nothing to do */
-		return noErr;
-	switch (syncInfo->csMode & syncmask) {
-	case kDPMSSyncOn:
-		newpowermode = kAVPowerOn;
-		break;
-	case kDPMSSyncStandby:
-		newpowermode = kAVPowerStandby;
-		break;
-	case kDPMSSyncSuspend:
-		newpowermode = kAVPowerSuspend;
-		break;
-	case kDPMSSyncOff:
-		newpowermode = kAVPowerOff;
-		break;
-	default:
-		return paramErr;
-	}
-	if (newpowermode != MOLVideoPowerState) {
-		//OSI_SetVPowerState(newpowermode);
-		MOLVideoPowerState = newpowermode;
-	}
-
-	return noErr;
+	return paramErr;
 }
 
 OSStatus
 GraphicsCoreGetSync(VDSyncInfoRec *syncInfo)
 {
-	CHECK_OPEN( statusErr );
-		
 	Trace(GraphicsCoreGetSync);
 
-	if (syncInfo->csMode == 0xff) {
-		/* report back the capability */
-		syncInfo->csMode = 0 | ( 1 << kDisableHorizontalSyncBit)
-							 | ( 1 << kDisableVerticalSyncBit)
-							 | ( 1 << kDisableCompositeSyncBit);
-	} else if (syncInfo->csMode == 0) {
-		/* current sync mode */
-		switch (MOLVideoPowerState) {
-		case kAVPowerOn:
-			syncInfo->csMode = kDPMSSyncOn;
-			break;
-		case kAVPowerStandby:
-			syncInfo->csMode = kDPMSSyncStandby;
-			break;
-		case kAVPowerSuspend:
-			syncInfo->csMode = kDPMSSyncSuspend;
-			break;
-		case kAVPowerOff:
-			syncInfo->csMode = kDPMSSyncOff;
-			break;
-		}
-	} else /* not defined ? */
-		return paramErr;
-
-	return noErr;
+	return paramErr;
 }
 
 OSStatus
@@ -313,18 +292,7 @@ GraphicsCoreSetPowerState(VDPowerStateRec *powerStateRec)
 {
 	Trace(GraphicsCoreSetPowerState);
 
-	CHECK_OPEN( controlErr );
-
-	if (powerStateRec->powerState > kAVPowerOn)
-		return paramErr;
-		
-	if (MOLVideoPowerState != powerStateRec->powerState) {
-		//OSI_SetVPowerState(powerStateRec->powerState);
-		MOLVideoPowerState = powerStateRec->powerState;
-	}
-	powerStateRec->powerFlags = 0;
-
-	return noErr;
+	return paramErr;
 }
 
 OSStatus
@@ -332,11 +300,7 @@ GraphicsCoreGetPowerState(VDPowerStateRec *powerStateRec)
 {
 	Trace(GraphicsCoreGetPowerState);
 
-	CHECK_OPEN( statusErr );
-		
-	powerStateRec->powerState = MOLVideoPowerState;
-	powerStateRec->powerFlags = 0;
-	return noErr;
+	return paramErr;
 }
 		
 OSStatus
@@ -349,30 +313,6 @@ GraphicsCoreSetPreferredConfiguration(VDSwitchInfoRec *switchInfo)
 	return noErr;
 }
 
-static UInt8 DepthToDepthMode(UInt8 depth)
-{
-	switch (depth) {
-	case 8:
-		return kDepthMode1;
-	case 15:
-	case 16:
-		return kDepthMode2;
-	default:
-		return kDepthMode3;
-	}
-}
-
-static UInt8 DepthModeToDepth(UInt8 mode)
-{
-	switch (mode) {
-	case kDepthMode1:
-		return 8;
-	case kDepthMode2:
-		return 15;
-	default:
-		return 32;
-	}
-}
 
 OSStatus
 GraphicsCoreGetPreferredConfiguration(VDSwitchInfoRec *switchInfo)
@@ -394,14 +334,18 @@ GraphicsCoreGetPreferredConfiguration(VDSwitchInfoRec *switchInfo)
 OSStatus
 GraphicsCoreGetBaseAddress(VDPageInfo *pageInfo)
 {
+	UInt32 pageCount, pageSize;
+
 	Trace(GraphicsCoreGetBaseAddress);
 
 	CHECK_OPEN( statusErr );
 
-	if (pageInfo->csPage != 0)
+	QemuVga_GetModePages(GLOBAL.curMode, GLOBAL.depth, &pageSize, &pageCount);
+	if (pageInfo->csPage >= pageCount)
 		return paramErr;
 		
-	pageInfo->csBaseAddr = FB_START;
+	pageInfo->csBaseAddr = FB_START + pageInfo->csPage * pageSize;
+
 	return noErr;
 }
 			
@@ -431,11 +375,10 @@ GraphicsCoreGetMode(VDPageInfo *pageInfo)
 
 	CHECK_OPEN( statusErr );
 	
-	//lprintf("GetMode\n");
 	pageInfo->csMode		= DepthToDepthMode(GLOBAL.depth);
-	pageInfo->csPage		= 0;
-	pageInfo->csBaseAddr	= FB_START;
-	
+	pageInfo->csPage		= GLOBAL.curPage;
+	pageInfo->csBaseAddr	= GLOBAL.curBaseAddress;
+
 	return noErr;
 }
 
@@ -449,8 +392,8 @@ GraphicsCoreGetCurrentMode(VDSwitchInfoRec *switchInfo)
 	//lprintf("GetCurrentMode\n");
 	switchInfo->csMode		= DepthToDepthMode(GLOBAL.depth);
 	switchInfo->csData		= GLOBAL.curMode + 1;
-	switchInfo->csPage		= 0;
-	switchInfo->csBaseAddr	= FB_START;
+	switchInfo->csPage		= GLOBAL.curPage;
+	switchInfo->csBaseAddr	= GLOBAL.curBaseAddress;
 
 	return noErr;
 }
@@ -480,15 +423,25 @@ GraphicsCoreGetModeTiming(VDTimingInfoRec *timingInfo)
 OSStatus
 GraphicsCoreSetMode(VDPageInfo *pageInfo)
 {
+	UInt32 newDepth, newPage, pageCount;
+
 	Trace(GraphicsCoreSetMode);
 
 	CHECK_OPEN(controlErr);
 
-	if (pageInfo->csPage != 0)
+	newDepth = DepthModeToDepth(pageInfo->csMode);
+	newPage = pageInfo->csPage;
+	QemuVga_GetModePages(GLOBAL.curMode, newDepth, NULL, &pageCount);
+
+	lprintf("Requested depth=%d page=%d\n", newDepth, newPage);
+	if (pageInfo->csPage >= pageCount)
 		return paramErr;
 	
-	QemuVga_SetMode(GLOBAL.curMode, DepthModeToDepth(pageInfo->csMode));
-	pageInfo->csBaseAddr = FB_START;
+	if (newDepth != GLOBAL.depth || newPage != GLOBAL.curPage)
+		QemuVga_SetMode(GLOBAL.curMode, newDepth, newPage);
+	
+	pageInfo->csBaseAddr = GLOBAL.curBaseAddress;
+	lprintf("Returning BA: %lx\n", pageInfo->csBaseAddr);
 
 	return noErr;
 }			
@@ -497,23 +450,26 @@ GraphicsCoreSetMode(VDPageInfo *pageInfo)
 OSStatus
 GraphicsCoreSwitchMode(VDSwitchInfoRec *switchInfo)
 {
-	UInt32 newMode, newDepth;
+	UInt32 newMode, newDepth, newPage, pageCount;
 
 	Trace(GraphicsCoreSwitchMode);
 
 	CHECK_OPEN(controlErr);
-
-	if (switchInfo->csPage != 0)
-		return paramErr;
 	
 	newMode = switchInfo->csData - 1;
 	newDepth = DepthModeToDepth(switchInfo->csMode);
-	
-	if (newMode != GLOBAL.curMode || newDepth != GLOBAL.depth) {
-		if (QemuVga_SetMode(newMode, newDepth))
+	newPage = switchInfo->csPage;
+	QemuVga_GetModePages(GLOBAL.curMode, newDepth, NULL, &pageCount);
+
+	if (newPage >= pageCount)
+		return paramErr;
+
+	if (newMode != GLOBAL.curMode || newDepth != GLOBAL.depth ||
+	    newPage != GLOBAL.curPage) {
+		if (QemuVga_SetMode(newMode, newDepth, newPage))
 			return controlErr;
 	}
-	switchInfo->csBaseAddr = FB_START;
+	switchInfo->csBaseAddr = GLOBAL.curBaseAddress;
 
 	return noErr;
 }
@@ -548,7 +504,7 @@ GraphicsCoreGetNextResolution(VDResolutionInfoRec *resInfo)
 	resInfo->csHorizontalPixels	= width;
 	resInfo->csVerticalLines	= height;
 	resInfo->csRefreshRate		= 60;
-	resInfo->csMaxDepthMode		= kDepthMode3; /* XXX Calculate if it fits ! */
+	resInfo->csMaxDepthMode		= MAX_DEPTH_MODE; /* XXX Calculate if it fits ! */
 
 	return noErr;
 }
@@ -557,29 +513,26 @@ GraphicsCoreGetNextResolution(VDResolutionInfoRec *resInfo)
 OSStatus
 GraphicsCoreGetVideoParams(VDVideoParametersInfoRec *videoParams)
 {
-	UInt32 width, height, depth;
+	UInt32 width, height, depth, rowBytes, pageCount;
 	OSStatus err = noErr;
 	
 	Trace(GraphicsCoreGetVideoParams);
 
 	CHECK_OPEN(statusErr);
-
-	//lprintf("GetVideoParams(ID=%d, depthMode=%d)\n",
-	//	videoParams->csDisplayModeID,
-	//	videoParams->csDepthMode);
  		
 	if (videoParams->csDisplayModeID < 1 || videoParams->csDisplayModeID > GLOBAL.numModes)
 		return paramErr;
-
+	if (videoParams->csDepthMode > MAX_DEPTH_MODE)
+		return paramErr;
 	if (QemuVga_GetModeInfo(videoParams->csDisplayModeID - 1, &width, &height))
 		return paramErr;
-
-	videoParams->csPageCount	= 1;
 	
 	depth = DepthModeToDepth(videoParams->csDepthMode);
-
-	//lprintf(" -> width=%d, height=%d, depth=%d\n", width, height, depth);
+	QemuVga_GetModePages(videoParams->csDisplayModeID - 1, depth, NULL, &pageCount);
+	videoParams->csPageCount = pageCount;
+	lprintf("Video Params says %d pages\n", pageCount);
 	
+	rowBytes = width * ((depth + 7) / 8);
 	(videoParams->csVPBlockPtr)->vpBaseOffset 		= 0;			// For us, it's always 0
 	(videoParams->csVPBlockPtr)->vpBounds.top 		= 0;			// Always 0
 	(videoParams->csVPBlockPtr)->vpBounds.left 		= 0;			// Always 0
@@ -589,10 +542,9 @@ GraphicsCoreGetVideoParams(VDVideoParametersInfoRec *videoParams)
 	(videoParams->csVPBlockPtr)->vpHRes 			= 0x00480000;	// Hard coded to 72 dpi
 	(videoParams->csVPBlockPtr)->vpVRes 			= 0x00480000;	// Hard coded to 72 dpi
 	(videoParams->csVPBlockPtr)->vpPlaneBytes 		= 0;			// Always 0
-
 	(videoParams->csVPBlockPtr)->vpBounds.bottom	= height;
 	(videoParams->csVPBlockPtr)->vpBounds.right		= width;
-	(videoParams->csVPBlockPtr)->vpRowBytes			= width * ((depth + 7) / 8);
+	(videoParams->csVPBlockPtr)->vpRowBytes			= rowBytes;
 
 	switch (depth) {
 	case 8:

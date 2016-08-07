@@ -16,6 +16,11 @@ DriverGestaltHandler( CntrlParam *pb )
 	PB.driverGestaltResponse = 0;
 	status = noErr;
 
+	lprintf("DriverGestalt, selector=%c%c%c%c\n",
+		PB.driverGestaltSelector >> 24,
+		(PB.driverGestaltSelector >> 16) & 0xff,
+		(PB.driverGestaltSelector >>  8) & 0xff,
+		(PB.driverGestaltSelector      ) & 0xff);	
 	switch( PB.driverGestaltSelector ) {
 	case kdgSync:
 		PB.driverGestaltResponse = FALSE;	/* We handle asynchronous I/O */

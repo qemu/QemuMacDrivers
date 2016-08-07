@@ -10,7 +10,7 @@
 #include <DriverServices.h>
 #include <PCI.h>
 
-#pragma internal on
+#include "MacDriverUtils.h"
 
 #ifndef FALSE
 #define TRUE	1
@@ -19,8 +19,8 @@
 
 #define QEMU_PCI_VIDEO_VENDOR_ID		0x1234
 #define QEMU_PCI_VIDEO_DEVICE_ID		0x1111
-#define QEMU_PCI_VIDEO_NAME				"\pQemuVgaVideo"
-#define QEMU_PCI_VIDEO_PNAME			"\p.QemuVgaVideo"
+#define QEMU_PCI_VIDEO_NAME				"\pQEMU,VGA"
+#define QEMU_PCI_VIDEO_PNAME			"\p.Display_Video_QemuVGA"
 
 #define QEMU_PCI_VIDEO_BASE_REG			0x10
 #define QEMU_PCI_VIDEO_MMIO_REG			0x18
@@ -51,6 +51,9 @@ struct DriverGlobal {
 	Boolean				qdInterruptsEnable;	/* Enable VBLs for qd */
 	Boolean				qdLuminanceMapping;
 
+	Boolean				hasPCIInterrupt;
+	IRQInfo				irqInfo;
+
 	Boolean				hasTimer;
 	InterruptServiceIDType	qdVBLInterrupt;
 	TimerID				VBLTimerID;
@@ -63,6 +66,8 @@ struct DriverGlobal {
 	UInt32				bootMode;
 	UInt32				curMode;
 	UInt32				numModes;
+	UInt32				curPage;
+	LogicalAddress		curBaseAddress;
 };
 typedef struct DriverGlobal DriverGlobal, *DriverGlobalPtr;
 

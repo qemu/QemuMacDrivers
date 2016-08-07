@@ -7,7 +7,6 @@
 /*
  * The Driver Manager calls DoDriverIO to perform I/O.
  */
-#pragma internal off
 
 OSStatus
 DoDriverIO(	AddressSpaceID			addressSpaceID,
@@ -15,8 +14,6 @@ DoDriverIO(	AddressSpaceID			addressSpaceID,
 		IOCommandContents		ioCommandContents,
 		IOCommandCode			ioCommandCode,
 		IOCommandKind			ioCommandKind);
-
-#pragma internal on
 
 #include "MacDriverUtils.h"
 
@@ -79,8 +76,6 @@ DriverWriteCmd(		AddressSpaceID			addressSpaceID,
 OSStatus
 DriverGestaltHandler(	CntrlParam*			pb);
 
-
-#pragma internal on
 
 /*	.___________________________________________________________________________________.
   	| Utitlity function to clear a block of memory.										|

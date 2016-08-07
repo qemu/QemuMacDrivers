@@ -1,6 +1,19 @@
 #ifndef __QEMU_VGA_H__
 #define __QEMU_VGA_H__
 
+/* This must be enabled for the MacOS X version of the timer otherwise
+ * we don't know if the call failed and don't back off to non-VBL ops
+ */
+#define USE_DSL_TIMER
+
+/* Pseudo VBL timer duration in ms */
+#define TIMER_DURATION	30
+
+/* Enable use of the PCI IRQ as VBL using non-upstream QEMU VGA
+ * extensions
+ */
+#undef USE_PCI_IRQ
+
 /* --- Qemu/Bochs special registers --- */
 
 #define VBE_DISPI_IOPORT_INDEX           0x01CE
@@ -48,7 +61,9 @@ extern OSStatus	QemuVga_SetDepth(UInt32 bpp);
 extern OSStatus	QemuVga_SetColorEntry(UInt32 index, RGBColor *color);
 extern OSStatus	QemuVga_GetColorEntry(UInt32 index, RGBColor *color);
 
+extern OSStatus QemuVga_GetModePages(UInt32 index, UInt32 depth,
+									 UInt32 *pageSize, UInt32 *pageCount);
 extern OSStatus QemuVga_GetModeInfo(UInt32 index, UInt32 *width, UInt32 *height);
-extern OSStatus QemuVga_SetMode(UInt32 modeIndex, UInt32 depth);
+extern OSStatus QemuVga_SetMode(UInt32 modeIndex, UInt32 depth, UInt32 page);
 
 #endif

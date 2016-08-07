@@ -2,6 +2,7 @@
 #include "VideoDriverPrototypes.h"
 #include "DriverQDCalls.h"
 #include "QemuVga.h"
+#include <Timer.h>
 
 /* List of supported modes */
 struct vMode {
@@ -77,11 +78,82 @@ static UInt32 ExtReadL(UInt32 reg)
 	return val;
 }
 
+static OSStatus VBLTimerProc(void *p1, void *p2);
+
+#ifndef USE_DSL_TIMER
+static TMTask gLegacyTimer;
+
+static pascal void legacyTimerCB(TMTaskPtr *inTask)
+{
+	VBLTimerProc(NULL, NULL);
+}
+
+static const RoutineDescriptor	gLegacyTimerDesc	= BUILD_ROUTINE_DESCRIPTOR(uppTimerProcInfo, legacyTimerCB);
+static const TimerUPP			gLegacyTimerProc	= (TimerUPP) &gLegacyTimerDesc;
+static int gTimerInstalled;
+
+static OSStatus ScheduleVBLTimer(void)
+{
+	if (!gTimerInstalled) {
+		BlockZero(&gLegacyTimer, sizeof(gLegacyTimer));
+		gLegacyTimer.tmAddr = gLegacyTimerProc;
+		gLegacyTimer.qLink = (QElemPtr)'eada';
+		InsXTime((QElemPtr)&gLegacyTimer);
+		gTimerInstalled = true;
+	}
+	PrimeTime((QElemPtr)&gLegacyTimer, TIMER_DURATION);
+	return noErr;
+}
+
+#else
+
+static OSStatus ScheduleVBLTimer(void)
+{
+	AbsoluteTime target = AddDurationToAbsolute(TIMER_DURATION, UpTime());
+	return SetInterruptTimer(&target, VBLTimerProc, NULL, &GLOBAL.VBLTimerID);
+}
+
+#endif
+
+static OSStatus VBLTimerProc(void *p1, void *p2)
+{
+	static UInt32 VBcnt;
+
+	GLOBAL.inInterrupt = 1;
+
+	/* This can be called before the service is ready */
+	if (GLOBAL.qdVBLInterrupt && GLOBAL.qdInterruptsEnable)
+		VSLDoInterruptService(GLOBAL.qdVBLInterrupt);
+	
+	/* Reschedule */
+	ScheduleVBLTimer();
+
+	GLOBAL.inInterrupt = 0;
+}
+
+#ifdef USE_PCI_IRQ
+static InterruptMemberNumber PCIInterruptHandler(InterruptSetMember ISTmember,
+												 void *refCon, UInt32 theIntCount)
+{
+	UInt32 reg;
+	
+	reg = ExtReadL(2);
+	if (!(reg & 1))
+		return kIsrIsNotComplete;
+	if (GLOBAL.qdVBLInterrupt && GLOBAL.qdInterruptsEnable)
+		VSLDoInterruptService(GLOBAL.qdVBLInterrupt);
+	ExtWriteL(2, 3);
+	return kIsrIsComplete;
+}
+#endif
+
+
 OSStatus QemuVga_Init(void)
 {
 	UInt16 id, i;
 	UInt32 mem, width, height, depth;
 
+	lprintf("First MMIO read...\n");
 	id = DispiReadW(VBE_DISPI_INDEX_ID);
 	mem = DispiReadW(VBE_DISPI_INDEX_VIDEO_MEMORY_64K);
 	mem <<= 16;
@@ -110,34 +182,20 @@ OSStatus QemuVga_Init(void)
 		lprintf("Not found in list ! using default.\n");
 		i = 0;
 	}
-	GLOBAL.curMode = GLOBAL.bootMode = i;
+	GLOBAL.bootMode = i;
 	GLOBAL.numModes = sizeof(vModes) / sizeof(struct vMode) - 1;
 
+	QemuVga_SetMode(GLOBAL.bootMode, depth, 0);
+
+#ifdef USE_PCI_IRQ
+	if (SetupPCIInterrupt(&GLOBAL.deviceEntry, &GLOBAL.irqInfo,
+					   	  PCIInterruptHandler, NULL) == noErr)
+		GLOBAL.hasPCIInterrupt = true;
+	else
+#else
+	GLOBAL.hasPCIInterrupt = false;
+#endif
 	return noErr;
-}
-
-static OSStatus VBLTimerProc(void *p1, void *p2);
-
-static OSStatus ScheduleVBLTimer(void)
-{
-    /* XXX HACK: Run timer at 20Hz */
-	AbsoluteTime target = AddDurationToAbsolute(50, UpTime());
-	
-	return SetInterruptTimer(&target, VBLTimerProc, NULL, &GLOBAL.VBLTimerID);
-}
-
-static OSStatus VBLTimerProc(void *p1, void *p2)
-{
-	GLOBAL.inInterrupt = 1;
-
-	/* This can be called before the service is ready */
-	if (GLOBAL.qdVBLInterrupt && GLOBAL.qdInterruptsEnable)
-		VSLDoInterruptService(GLOBAL.qdVBLInterrupt);
-	
-	/* Reschedule */
-	ScheduleVBLTimer();
-
-	GLOBAL.inInterrupt = 0;
 }
 
 OSStatus QemuVga_Open(void)
@@ -146,22 +204,29 @@ OSStatus QemuVga_Open(void)
 
 	GLOBAL.isOpen = true;
 
-	/* Schedule the timer now if timers are supported. They aren't on OS X
-	 * in which case we must not create the VSL service, otherwise OS X will expect
-	 * a VBL and fail to update the cursor when not getting one.
-	 */
-	GLOBAL.hasTimer = (ScheduleVBLTimer() == noErr);
-	GLOBAL.qdInterruptsEnable = GLOBAL.hasTimer;
+	if (GLOBAL.hasPCIInterrupt) {
+		QemuVga_EnableInterrupts();
+		lprintf("VBL registered using PCI interrupts\n");	
+	} else {
+		/* Schedule the timer now if timers are supported. They aren't on OS X
+		 * in which case we must not create the VSL service, otherwise OS X will expect
+		 * a VBL and fail to update the cursor when not getting one.
+	 	*/
+		lprintf("Testing using timer to simulate VBL..\n");	
+		GLOBAL.hasTimer = (ScheduleVBLTimer() == noErr);
+		GLOBAL.qdInterruptsEnable = GLOBAL.hasTimer;
 
-	/* Create VBL if timer works */
-	if (GLOBAL.hasTimer && !GLOBAL.qdVBLInterrupt)
+		if (GLOBAL.hasTimer)
+			lprintf("Using timer to simulate VBL.\n");	
+		else
+			lprintf("No timer service (OS X ?), VBL not registered.\n");	
+
+	}
+
+	/* Create VBL if we have a PCI interrupt or timer works */
+	if (GLOBAL.hasPCIInterrupt || GLOBAL.hasTimer)
 		VSLNewInterruptService(&GLOBAL.deviceEntry, kVBLInterruptServiceType, &GLOBAL.qdVBLInterrupt);
 	
-	if (GLOBAL.hasTimer)
-		lprintf("Using timer to simulate VBL.\n");	
-	else
-		lprintf("No timer service (OS X ?), VBL not registered.\n");	
-
 	return noErr;
 }
 
@@ -190,7 +255,11 @@ void QemuVga_EnableInterrupts(void)
 {
 	GLOBAL.qdInterruptsEnable = true;
 	if (GLOBAL.hasTimer)
-		ScheduleVBLTimer();	
+		ScheduleVBLTimer();
+	else if (GLOBAL.hasPCIInterrupt) {
+		GLOBAL.irqInfo.enableFunction(GLOBAL.irqInfo.interruptSetMember, GLOBAL.irqInfo.refCon);
+		ExtWriteL(2, 3);
+	}
 }
 
 void QemuVga_DisableInterrupts(void)
@@ -200,6 +269,10 @@ void QemuVga_DisableInterrupts(void)
 	GLOBAL.qdInterruptsEnable = false;
 	if (GLOBAL.hasTimer)
 		CancelTimer(GLOBAL.VBLTimerID, &remaining);
+	else if (GLOBAL.hasPCIInterrupt) {
+		ExtWriteL(2, 1);
+		GLOBAL.irqInfo.disableFunction(GLOBAL.irqInfo.interruptSetMember, GLOBAL.irqInfo.refCon);
+	}
 }
 
 OSStatus QemuVga_SetColorEntry(UInt32 index, RGBColor *color)
@@ -238,17 +311,41 @@ OSStatus QemuVga_GetModeInfo(UInt32 index, UInt32 *width, UInt32 *height)
 	return noErr;
 }
 
+OSStatus QemuVga_GetModePages(UInt32 index, UInt32 depth,
+							  UInt32 *pageSize, UInt32 *pageCount)
+{
+	UInt32 width, height, pBytes;
 
-OSStatus QemuVga_SetMode(UInt32 mode, UInt32 depth)
+	if (index >= GLOBAL.numModes)
+		return paramErr;
+	width = vModes[index].width;
+	height = vModes[index].height;
+	pBytes = width * ((depth + 7) / 8) * height;
+	if (pageSize)
+		*pageSize = pBytes;
+	if (pageCount) {
+		if (pBytes <= (GLOBAL.boardFBMappedSize / 2))
+			*pageCount = 2;
+		else
+			*pageCount = 1;
+	}
+	return noErr;
+}
+
+OSStatus QemuVga_SetMode(UInt32 mode, UInt32 depth, UInt32 page)
 {
 	UInt32 width, height;
+	UInt32 pageSize, numPages;
 
 	if (mode >= GLOBAL.numModes)
 		return paramErr;
+	
 	width = vModes[mode].width;
 	height = vModes[mode].height;
-
-	lprintf("Set Mode: %dx%dx%d\n", width, height, depth);
+	QemuVga_GetModePages(mode, depth, &pageSize, &numPages);
+	lprintf("Set Mode: %dx%dx%d has %d pages\n", width, height, depth, numPages);
+	if (page >= numPages)
+		return paramErr;
 
 	DispiWriteW(VBE_DISPI_INDEX_ENABLE,      0);
 	DispiWriteW(VBE_DISPI_INDEX_BPP,         depth);
@@ -256,12 +353,14 @@ OSStatus QemuVga_SetMode(UInt32 mode, UInt32 depth)
 	DispiWriteW(VBE_DISPI_INDEX_YRES,        height);
 	DispiWriteW(VBE_DISPI_INDEX_BANK,        0);
 	DispiWriteW(VBE_DISPI_INDEX_VIRT_WIDTH,  width);
-	DispiWriteW(VBE_DISPI_INDEX_VIRT_HEIGHT, height);
+	DispiWriteW(VBE_DISPI_INDEX_VIRT_HEIGHT, height * numPages);
 	DispiWriteW(VBE_DISPI_INDEX_X_OFFSET,    0);
-	DispiWriteW(VBE_DISPI_INDEX_Y_OFFSET,    0);
+	DispiWriteW(VBE_DISPI_INDEX_Y_OFFSET,    height * page);
 	DispiWriteW(VBE_DISPI_INDEX_ENABLE,      VBE_DISPI_ENABLED | VBE_DISPI_LFB_ENABLED | VBE_DISPI_8BIT_DAC);	
 	GLOBAL.curMode = mode;
 	GLOBAL.depth = depth;
+	GLOBAL.curPage = page;
+	GLOBAL.curBaseAddress = FB_START + page * pageSize;
 	
 	return noErr;
 }
