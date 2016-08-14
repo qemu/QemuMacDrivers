@@ -272,11 +272,39 @@ GraphicsCoreGetInterrupt(VDFlagRecord *flagRecord)
 OSStatus
 GraphicsCoreSetSync(VDSyncInfoRec *syncInfo)
 {
+	UInt8 sync, mask;
+
 	Trace(GraphicsCoreSetSync);
 
 	CHECK_OPEN( controlErr );
 
-	return paramErr;
+	sync = syncInfo->csMode;
+	mask = syncInfo->csFlags;	
+
+	/* Unblank shortcut */
+	if (sync == 0 && mask == 0) {
+		sync = 0;
+		mask = kDPMSSyncMask;
+	}
+	/* Blank shortcut */
+	if (sync == 0xff && mask == 0xff) {
+		sync = 0x7;
+		mask = kDPMSSyncMask;
+	}
+	
+	lprintf("SetSync req: sync=%x mask=%x\n", sync, mask);
+	
+	/* Only care about the DPMS mode */
+	if ((mask & kDPMSSyncMask) == 0)
+		return noErr;
+	
+	/* If any sync is disabled, blank */
+	if (sync & kDPMSSyncMask)
+		QemuVga_Blank(true);
+	else
+		QemuVga_Blank(false);
+
+	return noErr;
 }
 
 OSStatus
@@ -284,7 +312,20 @@ GraphicsCoreGetSync(VDSyncInfoRec *syncInfo)
 {
 	Trace(GraphicsCoreGetSync);
 
-	return paramErr;
+	if (syncInfo->csMode == 0xff) {
+		/* Return HW caps */
+		syncInfo->csMode = (1 << kDisableHorizontalSyncBit) |
+						   (1 << kDisableVerticalSyncBit) |
+						   (1 << kDisableCompositeSyncBit) |
+						   (1 << kNoSeparateSyncControlBit);
+	} else if (syncInfo->csMode == 0x00){
+		syncInfo->csMode = GLOBAL.blanked ? kDPMSSyncMask : 0;
+	} else
+		return statusErr;
+
+	syncInfo->csFlags = 0;
+
+	return noErr;
 }
 
 OSStatus

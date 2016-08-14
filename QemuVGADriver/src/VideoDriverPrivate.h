@@ -68,6 +68,7 @@ struct DriverGlobal {
 	UInt32				numModes;
 	UInt32				curPage;
 	LogicalAddress		curBaseAddress;
+	Boolean				blanked;
 };
 typedef struct DriverGlobal DriverGlobal, *DriverGlobalPtr;
 

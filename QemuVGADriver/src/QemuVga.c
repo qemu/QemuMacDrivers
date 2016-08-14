@@ -364,3 +364,19 @@ OSStatus QemuVga_SetMode(UInt32 mode, UInt32 depth, UInt32 page)
 	
 	return noErr;
 }
+
+OSStatus QemuVga_Blank(Boolean blank)
+{
+	/* We use the AR Index VGA register which is a flip flop
+	 * so we need to ensure we write twice. We use a non-existing
+	 * index so that the second write is dropped.
+	 */
+	if (blank) {
+		VgaWriteB(0x3c0, 0x1f);
+		VgaWriteB(0x3c0, 0x1f);
+	} else {
+		VgaWriteB(0x3c0, 0x3f);
+		VgaWriteB(0x3c0, 0x3f);
+	}
+	GLOBAL.blanked = blank;
+}
